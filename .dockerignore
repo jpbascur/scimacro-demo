@@ -1,0 +1,9 @@
+data/cache.*.pkl
+data/cache.*.pkl.gz
+data/*.csv
+data/test/
+models/specter2_adapter/pytorch_adapter.bin
+__pycache__/
+.git/
+.claude/
+*.pyc

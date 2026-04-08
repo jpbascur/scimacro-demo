@@ -202,39 +202,64 @@ else:
     _cluster_id = st.session_state.get("dataset_cluster_id", _DEMO_CLUSTERS[0]["id"])
 
 # ---------------------------------------------------------------------------
+# GCS lazy download — only used when running on Cloud Run
+# ---------------------------------------------------------------------------
+_GCS_BUCKET = os.environ.get("GCS_CACHE_BUCKET")  # e.g. "scimacro-demo-cache"
+
+def _ensure_cache_file(filename: str) -> bool:
+    """Download *filename* from GCS into DATA_DIR if it isn't already there.
+
+    Returns True if the file is available locally after the call, False if it
+    could not be obtained (GCS not configured, or file not in bucket).
+    """
+    path = os.path.join(config.DATA_DIR, filename)
+    if os.path.exists(path):
+        return True
+    if not _GCS_BUCKET:
+        return False
+    try:
+        from google.cloud import storage as gcs
+        client = gcs.Client()
+        bucket = client.bucket(_GCS_BUCKET)
+        blob   = bucket.blob(f"data/{filename}")
+        if not blob.exists():
+            return False
+        os.makedirs(config.DATA_DIR, exist_ok=True)
+        blob.download_to_filename(path)
+        return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Load data once per cluster
 # ---------------------------------------------------------------------------
 @st.cache_resource(show_spinner="Loading graph…")
 def load_base_graph(cluster_id: int):
-    path = os.path.join(config.DATA_DIR, f"cache.{cluster_id}.graph.pkl")
+    filename = f"cache.{cluster_id}.graph.pkl"
+    _ensure_cache_file(filename)
+    path = os.path.join(config.DATA_DIR, filename)
     if os.path.exists(path):
         with open(path, "rb") as f:
             return pickle.load(f)
-    # Fallback to legacy single-cluster cache
-    legacy = os.path.join(config.DATA_DIR, "cache.graph.pkl")
-    if os.path.exists(legacy):
-        with open(legacy, "rb") as f:
-            graph, meta = pickle.load(f)
-        titles_only = {pid: {"title": v.get("title", "")} for pid, v in meta.items()}
-        return graph, titles_only
-    st.error(f"Cache not found for cluster {cluster_id} — run `python precompute.py` first.")
+    st.error(f"Cache not found for cluster {cluster_id}. If running locally, run `python precompute.py` first.")
     st.stop()
 
 @st.cache_resource(show_spinner="Loading noun index…")
 def load_paper_nouns(cluster_id: int):
-    path = os.path.join(config.DATA_DIR, f"cache.{cluster_id}.nouns.pkl")
+    filename = f"cache.{cluster_id}.nouns.pkl"
+    _ensure_cache_file(filename)
+    path = os.path.join(config.DATA_DIR, filename)
     if os.path.exists(path):
         with open(path, "rb") as f:
-            return pickle.load(f)
-    legacy = os.path.join(config.DATA_DIR, "cache.nouns.pkl")
-    if os.path.exists(legacy):
-        with open(legacy, "rb") as f:
             return pickle.load(f)
     return {}
 
 @st.cache_resource(show_spinner="Loading abstracts…")
 def load_abstracts(cluster_id: int) -> dict[str, str]:
-    path = os.path.join(config.DATA_DIR, f"cache.{cluster_id}.abstracts.pkl.gz")
+    filename = f"cache.{cluster_id}.abstracts.pkl.gz"
+    _ensure_cache_file(filename)
+    path = os.path.join(config.DATA_DIR, filename)
     if os.path.exists(path):
         with gzip.open(path, "rb") as f:
             return pickle.load(f)
