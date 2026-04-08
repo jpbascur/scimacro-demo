@@ -60,22 +60,13 @@ config.py               — File paths, column names, algorithm parameters
 precompute.py           — One-time cache generation from BigQuery
 graph/
   builder.py            — igraph construction, Leiden clustering, cluster merging
-  labeler.py            — spaCy noun extraction, cluster labeling, SPECTER2 embeddings
+  labeler.py            — spaCy noun extraction and cluster labeling
   visualizer.py         — Plotly bubble chart and PyVis force-directed renderer
   bubble_layout.py      — Stress-minimising layout algorithm for the bubble chart
 data/
   demo_clusters.json    — Registry of demo datasets (id, label, field)
   bigquery_source.py    — BigQuery data backend (production)
   local_source.py       — CSV backend via DuckDB (development)
-models/
-  specter2_adapter/     — SPECTER2 adapter weights for paper embeddings
-```
-
-### SPECTER2 embeddings
-
-[SPECTER2](https://huggingface.co/allenai/specter2) is a transformer model trained by the Allen Institute for AI specifically to embed scientific papers. It encodes a paper's title and abstract into a 768-dimensional vector that captures its semantic content in the context of scientific literature — papers on similar topics end up close in embedding space regardless of the specific words used.
-
-In SciMacro, SPECTER2 embeddings are computed at precompute time and cached. They are available for downstream use (e.g. semantic similarity ranking) and are part of the precomputed artefacts stored per cluster.
 
 ---
 
@@ -86,11 +77,6 @@ In SciMacro, SPECTER2 embeddings are computed at precompute time and cached. The
 ```
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
-```
-
-For SPECTER2 embeddings (optional, only needed for precompute):
-```
-pip install torch transformers adapters
 ```
 
 ### With pre-built cache files
