@@ -1,0 +1,8 @@
+streamlit>=1.35
+google-cloud-bigquery>=3.20
+igraph>=0.11
+pyvis>=0.3.2
+db-dtypes>=1.2          # required by google-cloud-bigquery for Arrow types
+spacy>=3.7              # noun extraction for cluster labels and term search
+                        # also run: python -m spacy download en_core_web_sm
+pandas>=2.0             # dataframe for cluster table
