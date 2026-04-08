@@ -6,11 +6,11 @@ Streamlit app that clusters scientific papers by citation network using the Leid
 ## File map
 - `app.py` — Streamlit entry point, all UI logic
 - `config.py` — all magic strings/numbers (file paths, column names, algorithm params)
-- `precompute.py` — one-time precomputation of graph, nouns, embeddings
+- `precompute.py` — one-time precomputation of graph and nouns
 - `data/local_source.py` — CSV backend via DuckDB
 - `data/bigquery_source.py` — BigQuery backend (deploy only)
 - `graph/builder.py` — igraph construction, Leiden clustering, merging, cluster graph
-- `graph/labeler.py` — spaCy noun extraction, cluster labeling, SPECTER2 embeddings
+- `graph/labeler.py` — spaCy noun extraction, cluster labeling
 - `graph/visualizer.py` — PyVis (force-directed) and Plotly (bubble chart) renderers
 - `graph/bubble_layout.py` — stress-minimising layout algorithm
 
