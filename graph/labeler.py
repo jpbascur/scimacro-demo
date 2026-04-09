@@ -60,7 +60,7 @@ def extract_nouns(metadata: dict) -> dict[str, set[str]]:
         result[pid] = {
             token.lemma_.lower()
             for token in doc
-            if token.pos_ == "NOUN"
+            if token.pos_ in ("NOUN", "PROPN")
             and token.is_alpha
             and len(token.text) > 2
             and token.lemma_.lower() not in _GENERIC
