@@ -78,9 +78,6 @@ with st.sidebar:
             st.session_state["dataset_cluster_id"] = _demo_cluster_id
             st.session_state.pop("cluster_result", None)
 
-        if "dataset_cluster_id" not in st.session_state:
-            st.session_state["dataset_source"] = "demo"
-            st.session_state["dataset_cluster_id"] = _demo_cluster_id
 
         st.markdown("<div style='text-align:center;color:#888;margin:8px 0'>— or —</div>", unsafe_allow_html=True)
 
@@ -159,7 +156,14 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 # Resolve active dataset
 # ---------------------------------------------------------------------------
-_dataset_source = st.session_state.get("dataset_source", "demo")
+_dataset_source = st.session_state.get("dataset_source")
+
+if _dataset_source is None:
+    with st.sidebar:
+        with st.expander("Selected documents", expanded=False):
+            st.caption("No selected clusters.")
+    st.info("Choose a demo dataset from the sidebar and click **Load demo data**, or upload your own data.")
+    st.stop()
 
 if _dataset_source == "custom":
     _network_file = st.session_state.get("custom_network_file")
@@ -199,7 +203,7 @@ if _dataset_source == "custom":
 
     _cluster_id = None
 else:
-    _cluster_id = st.session_state.get("dataset_cluster_id", _DEMO_CLUSTERS[0]["id"])
+    _cluster_id = st.session_state.get("dataset_cluster_id")
 
 # ---------------------------------------------------------------------------
 # GCS lazy download — only used when running on Cloud Run
