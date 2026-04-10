@@ -291,6 +291,7 @@ def build_bubble_figure(
     selected: set[int] | None = None,
     top_docs: int = 3,
     top_nouns: int = 5,
+    placed: list | None = None,
 ) -> go.Figure:
     """Render a cluster-level igraph as a Plotly bubble chart.
 
@@ -320,10 +321,10 @@ def build_bubble_figure(
         RuntimeError: If the bubble layout fails to place all nodes (should not happen
                       in practice for well-formed cluster graphs).
     """
-    from .bubble_layout import build_node_list, build_graph
-
-    node_list = build_node_list(cg)
-    placed = build_graph(node_list, max_starts=max_starts)
+    if placed is None:
+        from .bubble_layout import build_node_list, build_graph
+        node_list = build_node_list(cg)
+        placed = build_graph(node_list, max_starts=max_starts)
 
     if placed is None:
         raise RuntimeError("Bubble layout failed to place all nodes.")

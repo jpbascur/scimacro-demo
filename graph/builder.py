@@ -259,6 +259,36 @@ def merge_to_target(g: ig.Graph, target_n: int) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Degree utilities
+# ---------------------------------------------------------------------------
+
+def compute_degree(g: ig.Graph, subset: set[str] | None = None) -> dict[str, int]:
+    """Return intra-subset degree for each vertex in *g*.
+
+    If *subset* is given, only edges where both endpoints are in the subset are
+    counted. If *subset* is None, all edges are counted (equivalent to the full
+    graph degree).
+
+    Returns a dict mapping vertex name → degree count.
+    """
+    if subset is not None:
+        result: dict[str, int] = defaultdict(int)
+        for e in g.es:
+            sn = g.vs[e.source]["name"]
+            tn = g.vs[e.target]["name"]
+            if sn in subset and tn in subset:
+                result[sn] += 1
+                result[tn] += 1
+        return dict(result)
+    else:
+        result = defaultdict(int)
+        for e in g.es:
+            result[g.vs[e.source]["name"]] += 1
+            result[g.vs[e.target]["name"]] += 1
+        return dict(result)
+
+
+# ---------------------------------------------------------------------------
 # Cluster-level graph
 # ---------------------------------------------------------------------------
 
