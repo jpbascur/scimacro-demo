@@ -277,6 +277,92 @@ else:
     base_graph, metadata = load_base_graph(_cluster_id)
     paper_nouns = load_paper_nouns(_cluster_id)
 
+# ---------------------------------------------------------------------------
+# Document selections sidebar panel — rendered after metadata is available
+# so it shows on every rerun, even before clustering.
+# ---------------------------------------------------------------------------
+def _cb_set_active():
+    chosen = st.session_state["_active_sel_radio"]
+    if chosen == "All documents":
+        st.session_state["active_selection"] = None
+    else:
+        st.session_state["active_selection"] = next(
+            (s for s in st.session_state["saved_selections"] if s["name"] == chosen), None
+        )
+
+with st.sidebar:
+    with st.expander("Document selections", expanded=False):
+        st.caption(
+            "Did a document grab your attention? All demo datasets use OpenAlex document IDs. "
+            "To see its entry, go to https://openalex.org/W followed by the doc_id — "
+            "e.g. https://openalex.org/W2741809807"
+        )
+
+        _saved = st.session_state["saved_selections"]
+        _active = st.session_state.get("active_selection")
+
+        _options = [{"name": "All documents", "doc_ids": list(metadata.keys())}] + _saved
+        _option_names = [o["name"] for o in _options]
+        _active_name = _active["name"] if _active else "All documents"
+        _active_idx = _option_names.index(_active_name) if _active_name in _option_names else 0
+
+        st.radio(
+            "Active selection for clustering",
+            options=_option_names,
+            index=_active_idx,
+            key="_active_sel_radio",
+            label_visibility="collapsed",
+            on_change=_cb_set_active,
+        )
+
+        _view = _options[_active_idx]
+        _view_names = _view["doc_ids"]
+        _total_view = len(_view_names)
+
+        _intra_deg = {name: 0 for name in _view_names}
+        for _e in base_graph.es:
+            _sn = base_graph.vs[_e.source]["name"]
+            _tn = base_graph.vs[_e.target]["name"]
+            if _sn in _intra_deg and _tn in _intra_deg:
+                _intra_deg[_sn] += 1
+                _intra_deg[_tn] += 1
+
+        _rows_top = sorted(_view_names, key=lambda n: _intra_deg[n], reverse=True)[:1000]
+        _sel_df = pd.DataFrame([
+            {"doc_id": n, "edges": _intra_deg[n], "title": metadata.get(n, {}).get("title", "")}
+            for n in _rows_top
+        ])
+
+        _caption = f"{_total_view:,} documents"
+        if _total_view > 1000:
+            _caption += " — showing top 1,000"
+        st.caption(_caption)
+
+        _abstracts = load_abstracts(_cluster_id) if _cluster_id is not None else {
+            pid: metadata.get(pid, {}).get("abstract", "") for pid in _view_names
+        }
+        st.download_button(
+            "Export CSV",
+            data=pd.DataFrame([
+                {"doc_id": n, "edges": _intra_deg[n],
+                 "title": metadata.get(n, {}).get("title", ""),
+                 "abstract": _abstracts.get(n, "")}
+                for n in _view_names
+            ]).to_csv(index=False).encode(),
+            file_name=f"{_view['name'].lower().replace(' ', '_')}.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        st.dataframe(_sel_df, use_container_width=True, hide_index=True)
+
+        if _active_idx > 0:
+            if st.button("Delete this selection", key="del_sel", use_container_width=True):
+                st.session_state["saved_selections"] = [
+                    s for s in _saved if s["name"] != _active_name
+                ]
+                st.session_state["active_selection"] = None
+                st.rerun()
+
 def _to_superscript(n: int) -> str:
     return str(n).translate(str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹"))
 
@@ -604,9 +690,6 @@ if run:
     st.rerun()
 
 if "cluster_result" not in st.session_state:
-    with st.sidebar:
-        with st.expander("Document selections", expanded=False):
-            st.caption("No clusters generated yet.")
     st.info("Choose a demo dataset from the sidebar and click **Load demo data**, then set the resolution and target clusters and click **Cluster**.")
     st.stop()
 
@@ -764,99 +847,6 @@ try:
         st.caption(f"{len(outside_papers):,} documents outside selection with ≥ {outside_threshold} links to selection")
 
     st.session_state["outside_papers"] = outside_papers
-
-    # ---------------------------------------------------------------------------
-    # Saved selections sidebar panel
-    # ---------------------------------------------------------------------------
-    with st.sidebar:
-        with st.expander("Document selections", expanded=False):
-            st.caption(
-                "Did a document grab your attention? All demo datasets use OpenAlex document IDs. "
-                "To see its entry, go to https://openalex.org/W followed by the doc_id — "
-                "e.g. https://openalex.org/W2741809807"
-            )
-
-            _saved = st.session_state["saved_selections"]
-            _active = st.session_state.get("active_selection")
-
-            # Build option list: "All documents" + saved selections
-            _options = [{"name": "All documents", "doc_ids": list(metadata.keys())}] + _saved
-            _option_names = [o["name"] for o in _options]
-            _active_name = _active["name"] if _active else "All documents"
-            _active_idx = _option_names.index(_active_name) if _active_name in _option_names else 0
-
-            def _cb_set_active():
-                chosen = st.session_state["_active_sel_radio"]
-                if chosen == "All documents":
-                    st.session_state["active_selection"] = None
-                else:
-                    st.session_state["active_selection"] = next(
-                        (s for s in _saved if s["name"] == chosen), None
-                    )
-
-            st.radio(
-                "Active selection for clustering",
-                options=_option_names,
-                index=_active_idx,
-                key="_active_sel_radio",
-                label_visibility="collapsed",
-                on_change=_cb_set_active,
-            )
-
-            # Show details of the active selection
-            _view = _options[_active_idx]
-            _view_names = _view["doc_ids"]
-            _total_view = len(_view_names)
-
-            _intra_deg = {name: 0 for name in _view_names}
-            for _e in base_graph.es:
-                _sn = base_graph.vs[_e.source]["name"]
-                _tn = base_graph.vs[_e.target]["name"]
-                if _sn in _intra_deg and _tn in _intra_deg:
-                    _intra_deg[_sn] += 1
-                    _intra_deg[_tn] += 1
-
-            _rows_top = sorted(_view_names, key=lambda n: _intra_deg[n], reverse=True)[:1000]
-            _sel_df = pd.DataFrame([
-                {
-                    "doc_id": n,
-                    "edges":  _intra_deg[n],
-                    "title":  metadata.get(n, {}).get("title", ""),
-                }
-                for n in _rows_top
-            ])
-
-            _caption = f"{_total_view:,} documents"
-            if _total_view > 1000:
-                _caption += " — showing top 1,000"
-            st.caption(_caption)
-
-            _abstracts = load_abstracts(_cluster_id) if _cluster_id is not None else {
-                pid: metadata.get(pid, {}).get("abstract", "") for pid in _view_names
-            }
-            st.download_button(
-                "Export CSV",
-                data=pd.DataFrame([
-                    {"doc_id": n,
-                     "edges": _intra_deg[n],
-                     "title": metadata.get(n, {}).get("title", ""),
-                     "abstract": _abstracts.get(n, "")}
-                    for n in _view_names
-                ]).to_csv(index=False).encode(),
-                file_name=f"{_view['name'].lower().replace(' ', '_')}.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-            st.dataframe(_sel_df, use_container_width=True, hide_index=True)
-
-            # Delete button for non-default selections
-            if _active_idx > 0:
-                if st.button("Delete this selection", key="del_sel", use_container_width=True):
-                    st.session_state["saved_selections"] = [
-                        s for s in _saved if s["name"] != _active_name
-                    ]
-                    st.session_state["active_selection"] = None
-                    st.rerun()
 
     # Compute color values from active mode
     color_mode = st.session_state.get("color_mode")
