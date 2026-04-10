@@ -158,10 +158,285 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 _dataset_source = st.session_state.get("dataset_source")
 
+# ---------------------------------------------------------------------------
+# Session state inits (must run before sidebar widgets)
+# ---------------------------------------------------------------------------
+if "selected_clusters" not in st.session_state:
+    st.session_state["selected_clusters"] = set()
+if "saved_selections" not in st.session_state:
+    st.session_state["saved_selections"] = []
+if "active_selection" not in st.session_state:
+    st.session_state["active_selection"] = None
+
+def _to_superscript(n: int) -> str:
+    return str(n).translate(str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹"))
+
+# ---------------------------------------------------------------------------
+# Callbacks
+# ---------------------------------------------------------------------------
+def _cb_set_active():
+    chosen = st.session_state["_active_sel_radio"]
+    if chosen == "All documents":
+        st.session_state["active_selection"] = None
+    else:
+        st.session_state["active_selection"] = next(
+            (s for s in st.session_state["saved_selections"] if s["name"] == chosen), None
+        )
+
+def _cb_save_selection():
+    prev = st.session_state.get("cluster_result")
+    if not prev:
+        return
+    selected_ids = st.session_state.get("selected_clusters", set())
+    if not selected_ids:
+        return
+    membership = prev["membership"]
+    doc_ids = [name for name, cid in membership.items() if cid in selected_ids]
+    doc_ids += list(st.session_state.get("outside_papers", set()))
+    n = len(st.session_state["saved_selections"]) + 1
+    name = st.session_state.get("_save_sel_name", "").strip() or f"Selection {n}"
+    st.session_state["saved_selections"].append({"name": name, "doc_ids": doc_ids})
+    st.session_state["selected_clusters"] = set()
+    st.session_state["outside_papers"] = set()
+    st.session_state["expand_outside_enabled"] = False
+    st.session_state["expand_outside_cb"] = False
+    st.session_state.pop("_save_sel_name", None)
+
+def _cb_add_selection():
+    tokens = st.session_state.get("sel_input", "").strip().split()
+    prev = st.session_state.get("cluster_result")
+    valid_ids = {v["community_id"] for v in prev["cg"].vs} if prev else set()
+    not_found = []
+    for token in tokens:
+        try:
+            cid = int(token)
+            if cid in valid_ids:
+                st.session_state["selected_clusters"].add(cid)
+            else:
+                not_found.append(token)
+        except ValueError:
+            not_found.append(token)
+    if not_found:
+        st.session_state["_sel_warning"] = f"Not found: {', '.join(not_found)}"
+    else:
+        st.session_state.pop("_sel_warning", None)
+
+def _cb_clear_selection():
+    st.session_state["selected_clusters"] = set()
+    st.session_state.pop("_sel_warning", None)
+
+def _cb_select_all():
+    prev = st.session_state.get("cluster_result")
+    if prev:
+        st.session_state["selected_clusters"] = {v["community_id"] for v in prev["cg"].vs}
+    st.session_state.pop("_sel_warning", None)
+
+def _cb_remove_selection():
+    tokens = st.session_state.get("sel_input", "").strip().split()
+    not_found = []
+    for token in tokens:
+        try:
+            cid = int(token)
+            st.session_state["selected_clusters"].discard(cid)
+        except ValueError:
+            not_found.append(token)
+    if not_found:
+        st.session_state["_sel_warning"] = f"Invalid: {', '.join(not_found)}"
+    else:
+        st.session_state.pop("_sel_warning", None)
+
+# ---------------------------------------------------------------------------
+# Sidebar — always rendered regardless of dataset state
+# ---------------------------------------------------------------------------
+with st.sidebar:
+    with st.expander("Run clustering", expanded=False):
+        _active_sel = st.session_state.get("active_selection")
+        if _active_sel is None:
+            _run_label = "Cluster all documents"
+            _run_help  = "Run Leiden on the full dataset."
+        else:
+            _n_docs = len(_active_sel["doc_ids"])
+            _run_label = f"Cluster — {_active_sel['name']} ({_n_docs:,} docs)"
+            _run_help  = f"Run Leiden on the {_n_docs:,} documents in '{_active_sel['name']}'."
+        run = st.button(
+            _run_label,
+            type="secondary",
+            use_container_width=True,
+            help=_run_help,
+            disabled=_dataset_source is None,
+        )
+        run_selection = False
+        main_component_only = st.checkbox(
+            "Main component only",
+            value=True,
+            help=(
+                "Keeps only documents belonging to the largest connected network. "
+                "A connected network is a group of documents where every document can "
+                "be reached from every other through citation links. "
+                "Documents outside this main network are removed as they cannot be "
+                "meaningfully placed on the map."
+            ),
+        )
+        st.caption(
+            "Higher resolution tends to produce more clusters. "
+            "More merging (larger gap between pre-merge and target) decreases clustering quality "
+            "but makes clusters more evenly sized."
+        )
+        e_col, m_col = st.columns(2)
+        with e_col:
+            exponent = st.number_input(
+                "Exponent",
+                value=-3,
+                step=1,
+                help="Main lever — each step multiplies or divides the resolution by 10. Use integers only.",
+            )
+        with m_col:
+            mantissa = st.number_input(
+                "Coefficient",
+                value=1.00,
+                step=0.01,
+                format="%.2f",
+                help="Fine-tuning — adjusts the resolution within the order of magnitude set by the exponent.",
+            )
+        resolution = mantissa * (10 ** exponent)
+        st.info(f"**{mantissa:.2f} × 10{_to_superscript(exponent)}**")
+        target_n = st.number_input(
+            "Target clusters",
+            min_value=1, max_value=2000, value=10, step=1,
+            help=(
+                "Merge smallest clusters by edge density until this many remain. "
+                "For more than 30 clusters, the bubble layout can take a long time to calculate — "
+                "consider enabling the Fast layout option."
+            ),
+        )
+
+    with st.expander("Science map display", expanded=False):
+        layout = st.radio(
+            "Layout",
+            options=["Bubble chart", "Force-directed"],
+            help=(
+                "Bubble chart: deterministic, no overlap, clusters placed to minimise stress. "
+                "Slower for >30 clusters.\n\n"
+                "Force-directed: physics simulation in the browser, faster to compute."
+            ),
+        )
+        is_bubble = layout == "Bubble chart"
+
+        st.caption("Bubble chart settings")
+        fast_layout = st.checkbox(
+            "Fast layout",
+            value=False,
+            disabled=not is_bubble,
+            help="Try only a subset of starting nodes instead of all — faster but slightly lower quality.",
+        )
+        max_starts = None
+        if fast_layout and is_bubble:
+            max_starts = st.number_input(
+                "Starting nodes to try",
+                min_value=1, max_value=500, value=10, step=1,
+                help="More starting nodes = better layout quality, slower computation.",
+            )
+
+        st.caption("Force-directed settings")
+        physics_on = st.checkbox(
+            "Physics on",
+            value=True,
+            disabled=is_bubble,
+            help="Run Barnes-Hut physics simulation in the browser.",
+        )
+
+        st.caption("Both layouts")
+        show_edges = st.checkbox("Show edges", value=False)
+
+    _has_results = "cluster_result" in st.session_state
+    st.markdown("### Data")
+    with st.expander("Cluster labels", expanded=False):
+        if not _has_results:
+            st.caption("No generated clusters.")
+        _nd_col, _nn_col, _lm_col, _lb_col = st.columns([1, 1, 1, 2])
+        with _nd_col:
+            top_docs_n = st.number_input(
+                "Top docs",
+                min_value=1, max_value=10, value=3, step=1,
+                help="Number of top documents to show per cluster in the table.",
+            )
+        with _nn_col:
+            top_nouns_n = st.number_input(
+                "Top nouns",
+                min_value=1, max_value=10, value=5, step=1,
+                help="Number of top nouns to show per cluster in the table and tooltip.",
+            )
+        with _lm_col:
+            label_m = st.number_input(
+                "Noun smoothing",
+                min_value=0, max_value=10000, value=25, step=1,
+                help=(
+                    "Label smoothing parameter. "
+                    "Higher values reduce the influence of terms that appear only in a few documents, "
+                    "favouring terms that are consistently frequent across the cluster."
+                ),
+            )
+        with _lb_col:
+            st.markdown("<div style='padding-top:24px'></div>", unsafe_allow_html=True)
+            if st.button("Regenerate labels", use_container_width=True, disabled=not _has_results,
+                         help="Recompute cluster labels with the current smoothing value."):
+                if _dataset_source is not None:
+                    _prev = st.session_state["cluster_result"]
+                    # paper_nouns not yet loaded here — will be loaded below after this block
+                    st.session_state["_regen_labels"] = {"m": label_m}
+        if _has_results:
+            st.divider()
+            _cg_sidebar     = st.session_state["cluster_result"]["cg"]
+            _labels_sidebar = st.session_state["cluster_result"]["labels"]
+            _sel_sidebar    = st.session_state.get("selected_clusters", set())
+            _rows_sidebar = top_clusters_by_size(_cg_sidebar, _labels_sidebar, n=_cg_sidebar.vcount(), top_docs=top_docs_n, top_nouns=top_nouns_n)
+            _df_sidebar = pd.DataFrame(_rows_sidebar)
+            _all_cols = ["c.", "size", "top documents", "top nouns"]
+            _display_df = _df_sidebar[[c for c in _all_cols if c in _df_sidebar.columns]].copy()
+
+            def _cell_html(val):
+                text = str(val) if val is not None else ""
+                return text.replace("\n", "<br>")
+
+            _header = "".join(
+                f"<th style='padding:6px 8px;border:1px solid #444;text-align:left;"
+                f"white-space:nowrap;background:#1e1e2e;font-size:12px'>{col}</th>"
+                for col in _display_df.columns
+            )
+            _rows_html = ""
+            for _idx, _row in _display_df.iterrows():
+                _is_sel = int(_df_sidebar.at[_idx, "c."]) in _sel_sidebar
+                _bg = "background:#2a1f4e;" if _is_sel else ""
+                _cells = "".join(
+                    f"<td style='padding:6px 8px;border:1px solid #444;"
+                    f"vertical-align:top;font-size:12px;{_bg}"
+                    f"{'white-space:nowrap;' if col in ('c.', 'size') else ('min-width:120px;overflow-wrap:break-word;word-break:normal;' if col == 'top nouns' else 'word-break:break-word;')}'>"
+                    f"{_cell_html(_row[col])}</td>"
+                    for col in _display_df.columns
+                )
+                _rows_html += f"<tr>{_cells}</tr>"
+
+            st.markdown(
+                f"<table style='width:100%;border-collapse:collapse'>"
+                f"<thead><tr>{_header}</tr></thead>"
+                f"<tbody>{_rows_html}</tbody>"
+                f"</table>",
+                unsafe_allow_html=True,
+            )
+
+    with st.expander("Document selections", expanded=False):
+        if _dataset_source is None:
+            st.caption("Load a dataset first.")
+        else:
+            st.caption(
+                "Did a document grab your attention? All demo datasets use OpenAlex document IDs. "
+                "To see its entry, go to https://openalex.org/W followed by the doc_id — "
+                "e.g. https://openalex.org/W2741809807"
+            )
+            # Content filled in below after metadata is loaded
+            st.session_state["_doc_sel_needs_render"] = True
+
 if _dataset_source is None:
-    with st.sidebar:
-        with st.expander("Selected documents", expanded=False):
-            st.caption("No selected clusters.")
     st.info("Choose a demo dataset from the sidebar and click **Load demo data**, or upload your own data.")
     st.stop()
 
@@ -277,19 +552,14 @@ else:
     base_graph, metadata = load_base_graph(_cluster_id)
     paper_nouns = load_paper_nouns(_cluster_id)
 
-# ---------------------------------------------------------------------------
-# Document selections sidebar panel — rendered after metadata is available
-# so it shows on every rerun, even before clustering.
-# ---------------------------------------------------------------------------
-def _cb_set_active():
-    chosen = st.session_state["_active_sel_radio"]
-    if chosen == "All documents":
-        st.session_state["active_selection"] = None
-    else:
-        st.session_state["active_selection"] = next(
-            (s for s in st.session_state["saved_selections"] if s["name"] == chosen), None
-        )
+# Handle deferred label regeneration (button clicked in sidebar before paper_nouns was loaded)
+if st.session_state.pop("_regen_labels", None) and "cluster_result" in st.session_state:
+    _prev = st.session_state["cluster_result"]
+    label_clusters(_prev["cg"], _prev["labels"], paper_nouns, _prev["membership"], m=label_m)
 
+# ---------------------------------------------------------------------------
+# Document selections sidebar panel — needs metadata, rendered after load
+# ---------------------------------------------------------------------------
 with st.sidebar:
     with st.expander("Document selections", expanded=False):
         st.caption(
@@ -297,10 +567,8 @@ with st.sidebar:
             "To see its entry, go to https://openalex.org/W followed by the doc_id — "
             "e.g. https://openalex.org/W2741809807"
         )
-
         _saved = st.session_state["saved_selections"]
         _active = st.session_state.get("active_selection")
-
         _options = [{"name": "All documents", "doc_ids": list(metadata.keys())}] + _saved
         _option_names = [o["name"] for o in _options]
         _active_name = _active["name"] if _active else "All documents"
@@ -332,7 +600,6 @@ with st.sidebar:
             {"doc_id": n, "edges": _intra_deg[n], "title": metadata.get(n, {}).get("title", "")}
             for n in _rows_top
         ])
-
         _caption = f"{_total_view:,} documents"
         if _total_view > 1000:
             _caption += " — showing top 1,000"
@@ -362,268 +629,6 @@ with st.sidebar:
                 ]
                 st.session_state["active_selection"] = None
                 st.rerun()
-
-def _to_superscript(n: int) -> str:
-    return str(n).translate(str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹"))
-
-# ---------------------------------------------------------------------------
-# Selection callbacks — run before the script body so the sidebar sees
-# up-to-date selected_clusters on the same rerun as the button click.
-# ---------------------------------------------------------------------------
-if "selected_clusters" not in st.session_state:
-    st.session_state["selected_clusters"] = set()
-if "saved_selections" not in st.session_state:
-    st.session_state["saved_selections"] = []   # list of {"name": str, "doc_ids": list[str]}
-if "active_selection" not in st.session_state:
-    st.session_state["active_selection"] = None  # None means "All documents"
-
-def _cb_save_selection():
-    prev = st.session_state.get("cluster_result")
-    if not prev:
-        return
-    selected_ids = st.session_state.get("selected_clusters", set())
-    if not selected_ids:
-        return
-    membership = prev["membership"]
-    doc_ids = [name for name, cid in membership.items() if cid in selected_ids]
-    doc_ids += list(st.session_state.get("outside_papers", set()))
-    n = len(st.session_state["saved_selections"]) + 1
-    name = st.session_state.get("_save_sel_name", "").strip() or f"Selection {n}"
-    st.session_state["saved_selections"].append({"name": name, "doc_ids": doc_ids})
-    st.session_state["selected_clusters"] = set()
-    st.session_state["outside_papers"] = set()
-    st.session_state["expand_outside_enabled"] = False
-    st.session_state["expand_outside_cb"] = False
-    st.session_state.pop("_save_sel_name", None)
-
-def _cb_add_selection():
-    tokens = st.session_state.get("sel_input", "").strip().split()
-    prev = st.session_state.get("cluster_result")
-    valid_ids = {v["community_id"] for v in prev["cg"].vs} if prev else set()
-    not_found = []
-    for token in tokens:
-        try:
-            cid = int(token)
-            if cid in valid_ids:
-                st.session_state["selected_clusters"].add(cid)
-            else:
-                not_found.append(token)
-        except ValueError:
-            not_found.append(token)
-    if not_found:
-        st.session_state["_sel_warning"] = f"Not found: {', '.join(not_found)}"
-    else:
-        st.session_state.pop("_sel_warning", None)
-
-def _cb_clear_selection():
-    st.session_state["selected_clusters"] = set()
-    st.session_state.pop("_sel_warning", None)
-
-
-def _cb_select_all():
-    prev = st.session_state.get("cluster_result")
-    if prev:
-        st.session_state["selected_clusters"] = {v["community_id"] for v in prev["cg"].vs}
-    st.session_state.pop("_sel_warning", None)
-
-def _cb_remove_selection():
-    tokens = st.session_state.get("sel_input", "").strip().split()
-    not_found = []
-    for token in tokens:
-        try:
-            cid = int(token)
-            st.session_state["selected_clusters"].discard(cid)
-        except ValueError:
-            not_found.append(token)
-    if not_found:
-        st.session_state["_sel_warning"] = f"Invalid: {', '.join(not_found)}"
-    else:
-        st.session_state.pop("_sel_warning", None)
-
-# ---------------------------------------------------------------------------
-# Sidebar
-# ---------------------------------------------------------------------------
-with st.sidebar:
-    with st.expander("Run clustering", expanded=False):
-        _active_sel = st.session_state.get("active_selection")
-        if _active_sel is None:
-            _run_label = "Cluster all documents"
-            _run_help  = "Run Leiden on the full dataset."
-        else:
-            _n_docs = len(_active_sel["doc_ids"])
-            _run_label = f"Cluster — {_active_sel['name']} ({_n_docs:,} docs)"
-            _run_help  = f"Run Leiden on the {_n_docs:,} documents in '{_active_sel['name']}'."
-        run = st.button(
-            _run_label,
-            type="secondary",
-            use_container_width=True,
-            help=_run_help,
-        )
-        run_selection = False  # kept for compatibility with clustering block below
-        main_component_only = st.checkbox(
-            "Main component only",
-            value=True,
-            help=(
-                "Keeps only documents belonging to the largest connected network. "
-                "A connected network is a group of documents where every document can "
-                "be reached from every other through citation links. "
-                "Documents outside this main network are removed as they cannot be "
-                "meaningfully placed on the map."
-            ),
-        )
-        st.caption(
-            "Higher resolution tends to produce more clusters. "
-            "More merging (larger gap between pre-merge and target) decreases clustering quality "
-            "but makes clusters more evenly sized."
-        )
-        e_col, m_col = st.columns(2)
-        with e_col:
-            exponent = st.number_input(
-                "Exponent",
-                value=-3,
-                step=1,
-                help="Main lever — each step multiplies or divides the resolution by 10. Use integers only.",
-            )
-        with m_col:
-            mantissa = st.number_input(
-                "Coefficient",
-                value=1.00,
-                step=0.01,
-                format="%.2f",
-                help="Fine-tuning — adjusts the resolution within the order of magnitude set by the exponent.",
-            )
-        resolution = mantissa * (10 ** exponent)
-        st.info(f"**{mantissa:.2f} × 10{_to_superscript(exponent)}**")
-        target_n = st.number_input(
-            "Target clusters",
-            min_value=1, max_value=2000, value=10, step=1,
-            help=(
-                "Merge smallest clusters by edge density until this many remain. "
-                "For more than 30 clusters, the bubble layout can take a long time to calculate — "
-                "consider enabling the Fast layout option."
-            ),
-        )
-
-    with st.expander("Science map display", expanded=False):
-        layout = st.radio(
-            "Layout",
-            options=["Bubble chart", "Force-directed"],
-            help=(
-                "Bubble chart: deterministic, no overlap, clusters placed to minimise stress. "
-                "Slower for >30 clusters.\n\n"
-                "Force-directed: physics simulation in the browser, faster to compute."
-            ),
-        )
-        is_bubble = layout == "Bubble chart"
-
-        st.caption("Bubble chart settings")
-        fast_layout = st.checkbox(
-            "Fast layout",
-            value=False,
-            disabled=not is_bubble,
-            help="Try only a subset of starting nodes instead of all — faster but slightly lower quality.",
-        )
-        max_starts = None
-        if fast_layout and is_bubble:
-            max_starts = st.number_input(
-                "Starting nodes to try",
-                min_value=1, max_value=500, value=10, step=1,
-                help="More starting nodes = better layout quality, slower computation.",
-            )
-
-        st.caption("Force-directed settings")
-        physics_on = st.checkbox(
-            "Physics on",
-            value=True,
-            disabled=is_bubble,
-            help="Run Barnes-Hut physics simulation in the browser.",
-        )
-
-        st.caption("Both layouts")
-        show_edges = st.checkbox("Show edges", value=False)
-
-    _has_results = "cluster_result" in st.session_state
-    st.markdown("### Data")
-    with st.expander("Cluster labels", expanded=False):
-        if not _has_results:
-            st.caption("No generated clusters.")
-        _nd_col, _nn_col, _lm_col, _lb_col = st.columns([1, 1, 1, 2])
-        with _nd_col:
-            top_docs_n = st.number_input(
-                "Top docs",
-                min_value=1,
-                max_value=10,
-                value=3,
-                step=1,
-                help="Number of top documents to show per cluster in the table.",
-            )
-        with _nn_col:
-            top_nouns_n = st.number_input(
-                "Top nouns",
-                min_value=1,
-                max_value=10,
-                value=5,
-                step=1,
-                help="Number of top nouns to show per cluster in the table and tooltip.",
-            )
-        with _lm_col:
-            label_m = st.number_input(
-                "Noun smoothing",
-                min_value=0,
-                max_value=10000,
-                value=25,
-                step=1,
-                help=(
-                    "Label smoothing parameter. "
-                    "Higher values reduce the influence of terms that appear only in a few documents, "
-                    "favouring terms that are consistently frequent across the cluster."
-                ),
-            )
-        with _lb_col:
-            st.markdown("<div style='padding-top:24px'></div>", unsafe_allow_html=True)
-            if st.button("Regenerate labels", use_container_width=True, disabled=not _has_results,
-                         help="Recompute cluster labels with the current smoothing value."):
-                _prev = st.session_state["cluster_result"]
-                label_clusters(_prev["cg"], _prev["labels"], paper_nouns, _prev["membership"], m=label_m)
-        if _has_results:
-            st.divider()
-            _cg_sidebar     = st.session_state["cluster_result"]["cg"]
-            _labels_sidebar = st.session_state["cluster_result"]["labels"]
-            _sel_sidebar    = st.session_state.get("selected_clusters", set())
-            _rows_sidebar = top_clusters_by_size(_cg_sidebar, _labels_sidebar, n=_cg_sidebar.vcount(), top_docs=top_docs_n, top_nouns=top_nouns_n)
-            _df_sidebar = pd.DataFrame(_rows_sidebar)
-            _all_cols = ["c.", "size", "top documents", "top nouns"]
-            _display_df = _df_sidebar[[c for c in _all_cols if c in _df_sidebar.columns]].copy()
-
-            def _cell_html(val):
-                text = str(val) if val is not None else ""
-                return text.replace("\n", "<br>")
-
-            _header = "".join(
-                f"<th style='padding:6px 8px;border:1px solid #444;text-align:left;"
-                f"white-space:nowrap;background:#1e1e2e;font-size:12px'>{col}</th>"
-                for col in _display_df.columns
-            )
-            _rows_html = ""
-            for _idx, _row in _display_df.iterrows():
-                _is_sel = int(_df_sidebar.at[_idx, "c."]) in _sel_sidebar
-                _bg = "background:#2a1f4e;" if _is_sel else ""
-                _cells = "".join(
-                    f"<td style='padding:6px 8px;border:1px solid #444;"
-                    f"vertical-align:top;font-size:12px;{_bg}"
-                    f"{'white-space:nowrap;' if col in ('c.', 'size') else ('min-width:120px;overflow-wrap:break-word;word-break:normal;' if col == 'top nouns' else 'word-break:break-word;')}'>"
-                    f"{_cell_html(_row[col])}</td>"
-                    for col in _display_df.columns
-                )
-                _rows_html += f"<tr>{_cells}</tr>"
-
-            st.markdown(
-                f"<table style='width:100%;border-collapse:collapse'>"
-                f"<thead><tr>{_header}</tr></thead>"
-                f"<tbody>{_rows_html}</tbody>"
-                f"</table>",
-                unsafe_allow_html=True,
-            )
 
 
 
