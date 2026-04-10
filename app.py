@@ -859,6 +859,31 @@ try:
         html = build_pyvis_html(cg, labels, physics=physics_on, show_edges=show_edges, term_freq=color_values, color_label=color_label, hover_label=hover_label, raw_values=color_raw_values, selected=selected_clusters, top_docs=top_docs_n, top_nouns=top_nouns_n)
         components.html(html, height=720, scrolling=False)
 
+    components.html("""
+        <style>
+            #back-to-top {
+                position: fixed;
+                bottom: 24px;
+                right: 24px;
+                width: 44px;
+                height: 44px;
+                border-radius: 50%;
+                background: rgba(255,255,255,0.15);
+                backdrop-filter: blur(6px);
+                border: 1px solid rgba(255,255,255,0.3);
+                color: white;
+                font-size: 20px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                z-index: 9999;
+                text-decoration: none;
+            }
+        </style>
+        <a id="back-to-top" onclick="window.parent.scrollTo({top:0,behavior:'smooth'})" title="Back to top">↑</a>
+    """, height=0)
+
 
 except st.runtime.scriptrunner.StopException:
     raise
