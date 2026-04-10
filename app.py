@@ -286,6 +286,29 @@ def _to_superscript(n: int) -> str:
 # ---------------------------------------------------------------------------
 if "selected_clusters" not in st.session_state:
     st.session_state["selected_clusters"] = set()
+if "saved_selections" not in st.session_state:
+    st.session_state["saved_selections"] = []   # list of {"name": str, "doc_ids": list[str]}
+if "active_selection" not in st.session_state:
+    st.session_state["active_selection"] = None  # None means "All documents"
+
+def _cb_save_selection():
+    prev = st.session_state.get("cluster_result")
+    if not prev:
+        return
+    selected_ids = st.session_state.get("selected_clusters", set())
+    if not selected_ids:
+        return
+    membership = prev["membership"]
+    doc_ids = [name for name, cid in membership.items() if cid in selected_ids]
+    doc_ids += list(st.session_state.get("outside_papers", set()))
+    n = len(st.session_state["saved_selections"]) + 1
+    name = st.session_state.get("_save_sel_name", "").strip() or f"Selection {n}"
+    st.session_state["saved_selections"].append({"name": name, "doc_ids": doc_ids})
+    st.session_state["selected_clusters"] = set()
+    st.session_state["outside_papers"] = set()
+    st.session_state["expand_outside_enabled"] = False
+    st.session_state["expand_outside_cb"] = False
+    st.session_state.pop("_save_sel_name", None)
 
 def _cb_add_selection():
     tokens = st.session_state.get("sel_input", "").strip().split()
@@ -336,30 +359,21 @@ def _cb_remove_selection():
 # ---------------------------------------------------------------------------
 with st.sidebar:
     with st.expander("Run clustering", expanded=False):
-        _n_selected     = len(st.session_state.get("selected_clusters", set()))
-        _connected_on   = st.session_state.get("expand_outside_enabled", False)
-        _has_map = "cluster_result" in st.session_state
-        run_all = st.button(
-            "Cluster all documents",
-            type="secondary",
-            use_container_width=True,
-            help="Run Leiden on the full collection.",
-        )
-        if _n_selected and _connected_on:
-            _sel_label = f"Cluster selected ({_n_selected} clusters + connected documents)"
-        elif _n_selected:
-            _sel_label = f"Cluster selected ({_n_selected} clusters)"
+        _active_sel = st.session_state.get("active_selection")
+        if _active_sel is None:
+            _run_label = "Cluster all documents"
+            _run_help  = "Run Leiden on the full dataset."
         else:
-            _sel_label = "Cluster selected"
-        run_selection = st.button(
-            _sel_label,
+            _n_docs = len(_active_sel["doc_ids"])
+            _run_label = f"Cluster — {_active_sel['name']} ({_n_docs:,} docs)"
+            _run_help  = f"Run Leiden on the {_n_docs:,} documents in '{_active_sel['name']}'."
+        run = st.button(
+            _run_label,
             type="secondary",
             use_container_width=True,
-            disabled=_n_selected == 0 or st.session_state.get("_ran_selection", False),
-            help="Cluster only the documents in the selected clusters (plus connected documents if enabled)." if _n_selected else "Select clusters on the map first.",
-            on_click=lambda: st.session_state.update(_ran_selection=True),
+            help=_run_help,
         )
-        run = run_all or run_selection
+        run_selection = False  # kept for compatibility with clustering block below
         main_component_only = st.checkbox(
             "Main component only",
             value=True,
@@ -533,14 +547,11 @@ with st.sidebar:
 if run:
     try:
         with st.spinner("Running Leiden…"):
-            prev_result = st.session_state.get("cluster_result")
-            if run_selection:
-                prev_membership = prev_result["membership"]
-                selected_ids = st.session_state.get("selected_clusters", set())
-                keep_names = {name for name, cid in prev_membership.items() if cid in selected_ids}
-                keep_names |= st.session_state.get("outside_papers", set())
+            _active_sel = st.session_state.get("active_selection")
+            if _active_sel is not None:
+                keep_names = set(_active_sel["doc_ids"])
             else:
-                keep_names = None  # all papers
+                keep_names = None  # all documents
 
             g = base_graph.copy()
             if keep_names is not None:
@@ -580,7 +591,6 @@ if run:
         st.session_state["outside_papers"] = set()
         st.session_state["expand_outside_enabled"] = False
         st.session_state["expand_outside_cb"] = False
-        st.session_state["_ran_selection"] = False
 
     except st.runtime.scriptrunner.StopException:
         raise
@@ -595,9 +605,9 @@ if run:
 
 if "cluster_result" not in st.session_state:
     with st.sidebar:
-        with st.expander("Selected documents", expanded=False):
-            st.caption("No selected clusters.")
-    st.info("Choose a demo dataset from the sidebar and click **Load demo data**, then set the resolution and target clusters and click **Cluster all documents**.")
+        with st.expander("Document selections", expanded=False):
+            st.caption("No clusters generated yet.")
+    st.info("Choose a demo dataset from the sidebar and click **Load demo data**, then set the resolution and target clusters and click **Cluster**.")
     st.stop()
 
 try:
@@ -704,6 +714,19 @@ try:
         )
         st.caption(f"Selected: {', '.join(str(i) for i in ids_sorted)} — {total_papers:,} documents")
 
+        c_name, c_save = st.columns([4, 2])
+        with c_name:
+            st.text_input(
+                "Save name",
+                key="_save_sel_name",
+                placeholder=f"Selection {len(st.session_state['saved_selections']) + 1}",
+                label_visibility="collapsed",
+            )
+        with c_save:
+            st.button("Save as selection", key="save_sel", use_container_width=True,
+                      on_click=_cb_save_selection,
+                      help="Save the selected clusters as a named document set for clustering.")
+
     # ---------------------------------------------------------------------------
     # Outside papers
     # ---------------------------------------------------------------------------
@@ -743,67 +766,97 @@ try:
     st.session_state["outside_papers"] = outside_papers
 
     # ---------------------------------------------------------------------------
-    # Selected documents sidebar panel — rendered here so outside_papers is current
+    # Saved selections sidebar panel
     # ---------------------------------------------------------------------------
     with st.sidebar:
-        with st.expander("Selected documents", expanded=False):
+        with st.expander("Document selections", expanded=False):
             st.caption(
                 "Did a document grab your attention? All demo datasets use OpenAlex document IDs. "
                 "To see its entry, go to https://openalex.org/W followed by the doc_id — "
                 "e.g. https://openalex.org/W2741809807"
             )
-            if not selected_clusters:
-                st.caption("No selected clusters.")
-            else:
-                _sel_names = [n for n, cid in membership.items() if cid in selected_clusters]
-                _outside   = list(outside_papers)
-                _all_names = _sel_names + _outside
-                _total     = len(_all_names)
 
-                _intra_deg = {name: 0 for name in _all_names}
-                _group_set = set(_all_names)
-                for _e in base_graph.es:
-                    _sn = base_graph.vs[_e.source]["name"]
-                    _tn = base_graph.vs[_e.target]["name"]
-                    if _sn in _intra_deg and _tn in _intra_deg:
-                        _intra_deg[_sn] += 1
-                        _intra_deg[_tn] += 1
+            _saved = st.session_state["saved_selections"]
+            _active = st.session_state.get("active_selection")
 
-                _rows_top = sorted(_all_names, key=lambda n: _intra_deg[n], reverse=True)[:1000]
-                _sel_df = pd.DataFrame([
-                    {
-                        "cluster":  membership.get(n, "outside"),
-                        "doc_id": n,
-                        "edges":    _intra_deg[n],
-                        "title":    metadata.get(n, {}).get("title", ""),
-                    }
-                    for n in _rows_top
-                ])
+            # Build option list: "All documents" + saved selections
+            _options = [{"name": "All documents", "doc_ids": list(metadata.keys())}] + _saved
+            _option_names = [o["name"] for o in _options]
+            _active_name = _active["name"] if _active else "All documents"
+            _active_idx = _option_names.index(_active_name) if _active_name in _option_names else 0
 
-                _caption = f"{len(_sel_names):,} in selection"
-                if _outside:
-                    _caption += f" + {len(_outside):,} connected"
-                if _total > 1000:
-                    _caption += " — showing top 1,000"
-                st.caption(_caption)
+            def _cb_set_active():
+                chosen = st.session_state["_active_sel_radio"]
+                if chosen == "All documents":
+                    st.session_state["active_selection"] = None
+                else:
+                    st.session_state["active_selection"] = next(
+                        (s for s in _saved if s["name"] == chosen), None
+                    )
 
-                _abstracts = load_abstracts(_cluster_id) if _cluster_id is not None else {
-                    pid: metadata.get(pid, {}).get("abstract", "") for pid in _all_names
+            st.radio(
+                "Active selection for clustering",
+                options=_option_names,
+                index=_active_idx,
+                key="_active_sel_radio",
+                label_visibility="collapsed",
+                on_change=_cb_set_active,
+            )
+
+            # Show details of the active selection
+            _view = _options[_active_idx]
+            _view_names = _view["doc_ids"]
+            _total_view = len(_view_names)
+
+            _intra_deg = {name: 0 for name in _view_names}
+            for _e in base_graph.es:
+                _sn = base_graph.vs[_e.source]["name"]
+                _tn = base_graph.vs[_e.target]["name"]
+                if _sn in _intra_deg and _tn in _intra_deg:
+                    _intra_deg[_sn] += 1
+                    _intra_deg[_tn] += 1
+
+            _rows_top = sorted(_view_names, key=lambda n: _intra_deg[n], reverse=True)[:1000]
+            _sel_df = pd.DataFrame([
+                {
+                    "doc_id": n,
+                    "edges":  _intra_deg[n],
+                    "title":  metadata.get(n, {}).get("title", ""),
                 }
-                st.download_button(
-                    "Export CSV (all)",
-                    data=pd.DataFrame([
-                        {"cluster": membership.get(n, "outside"), "doc_id": n,
-                         "edges": _intra_deg[n],
-                         "title": metadata.get(n, {}).get("title", ""),
-                         "abstract": _abstracts.get(n, "")}
-                        for n in _all_names
-                    ]).to_csv(index=False).encode(),
-                    file_name="selected_documents.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-                st.dataframe(_sel_df, use_container_width=True, hide_index=True)
+                for n in _rows_top
+            ])
+
+            _caption = f"{_total_view:,} documents"
+            if _total_view > 1000:
+                _caption += " — showing top 1,000"
+            st.caption(_caption)
+
+            _abstracts = load_abstracts(_cluster_id) if _cluster_id is not None else {
+                pid: metadata.get(pid, {}).get("abstract", "") for pid in _view_names
+            }
+            st.download_button(
+                "Export CSV",
+                data=pd.DataFrame([
+                    {"doc_id": n,
+                     "edges": _intra_deg[n],
+                     "title": metadata.get(n, {}).get("title", ""),
+                     "abstract": _abstracts.get(n, "")}
+                    for n in _view_names
+                ]).to_csv(index=False).encode(),
+                file_name=f"{_view['name'].lower().replace(' ', '_')}.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+            st.dataframe(_sel_df, use_container_width=True, hide_index=True)
+
+            # Delete button for non-default selections
+            if _active_idx > 0:
+                if st.button("Delete this selection", key="del_sel", use_container_width=True):
+                    st.session_state["saved_selections"] = [
+                        s for s in _saved if s["name"] != _active_name
+                    ]
+                    st.session_state["active_selection"] = None
+                    st.rerun()
 
     # Compute color values from active mode
     color_mode = st.session_state.get("color_mode")
