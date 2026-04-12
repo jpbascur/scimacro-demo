@@ -742,6 +742,16 @@ with st.sidebar:
                               on_click=_cb_save_selection,
                               help="Save the selected clusters as a named document collection.")
 
+    st.markdown("---")
+    st.markdown(
+        "<div style='font-size:0.78em;color:#888;line-height:1.8'>"
+        "Made by <a href='https://jpbascur.com' target='_blank' style='color:#aaa'>Juan Pablo Bascur</a><br>"
+        "Problems? Contact <a href='mailto:juanpablobascurcifuentes@gmail.com' style='color:#aaa'>juanpablobascurcifuentes@gmail.com</a><br>"
+        "GitHub: <a href='https://github.com/jpbascur/scimacro-demo' target='_blank' style='color:#aaa'>jpbascur/scimacro-demo</a>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
 if _dataset_source is None:
     st.info("Choose a demo dataset from the sidebar and click **Load demo data**, or upload your own data.")
     st.stop()
