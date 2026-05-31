@@ -65,8 +65,40 @@ graph/
   bubble_layout.py      — Stress-minimising layout algorithm for the bubble chart
 data/
   demo_clusters.json    — Registry of demo datasets (id, label, field)
-  bigquery_source.py    — BigQuery data backend (production)
-  local_source.py       — CSV backend via DuckDB (development)
+
+```
+
+---
+
+## Demo cache data
+
+The public GitHub repository does **not** include the precomputed demo datasets.
+Those cache files are large, so they are intentionally excluded from Git with
+`.gitignore` and from container builds with `.dockerignore`.
+
+The live demo stores the cache files in Google Cloud Storage:
+
+```
+gs://scimacro-demo-cache/data/
+```
+
+The Cloud Run service is configured with:
+
+```
+GCS_CACHE_BUCKET=scimacro-demo-cache
+```
+
+When a user selects a demo dataset, the app downloads the required cache files
+from that bucket on first use and then keeps them in memory. The bucket is
+publicly readable, but not publicly writable: anyone can download the cache
+files, while only project maintainers can modify them. If you prefer not to use
+the hosted cache files, regenerate them locally with `precompute.py`.
+
+Each demo dataset requires three cache files:
+
+- `data/cache.{id}.graph.pkl` - citation graph and paper titles
+- `data/cache.{id}.abstracts.pkl.gz` - compressed abstracts
+- `data/cache.{id}.nouns.pkl` - extracted noun index for labeling and search
 
 ---
 
@@ -86,6 +118,15 @@ If you have the cache files (`.pkl`, `.pkl.gz`) in `data/`, just run:
 ```
 streamlit run app.py
 ```
+
+You can also set:
+
+```
+GCS_CACHE_BUCKET=scimacro-demo-cache
+```
+
+and the app will download missing demo cache files lazily from the public
+read-only bucket.
 
 ### Generating cache files from BigQuery
 
@@ -108,10 +149,10 @@ This produces three files per cluster in `data/`:
 
 The app is deployed on [Google Cloud Run](https://cloud.google.com/run) with cache files stored in Google Cloud Storage. Cache files are downloaded lazily on first use — each dataset is fetched from GCS the first time a user selects it, then kept in memory for subsequent requests.
 
-Set the `GCS_CACHE_BUCKET` environment variable to point the app at your bucket:
+Set the `GCS_CACHE_BUCKET` environment variable to point the app at the cache bucket:
 
 ```
-GCS_CACHE_BUCKET=your-bucket-name
+GCS_CACHE_BUCKET=scimacro-demo-cache
 ```
 
 To rebuild and redeploy after code changes:

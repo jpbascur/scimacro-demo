@@ -4,6 +4,7 @@ Run with:
     streamlit run app.py
 """
 import gzip
+import html
 import json
 import pickle
 import os
@@ -78,6 +79,9 @@ with st.sidebar:
             st.session_state["dataset_source"] = "demo"
             st.session_state["dataset_cluster_id"] = _demo_cluster_id
             st.session_state.pop("cluster_result", None)
+            st.session_state["saved_collections"] = []
+            st.session_state["active_collection"] = None
+            st.session_state["selected_clusters"] = set()
 
 
         st.markdown("<div style='text-align:center;color:#888;margin:8px 0'>— or —</div>", unsafe_allow_html=True)
@@ -85,6 +89,7 @@ with st.sidebar:
         with st.expander("Upload your own data"):
             # Step 1 — Documents
             st.caption("1. Documents — CSV with columns: id, title, abstract")
+            st.caption("Document ids must match the network source/target ids.")
             _docs_file = st.file_uploader(
                 "Documents",
                 type=["csv"],
@@ -94,6 +99,7 @@ with st.sidebar:
 
             # Step 2 — Network
             st.caption("2. Network — CSV with columns: source, target, weight")
+            st.caption("Required: source, target. Optional: weight. The network is treated as undirected; duplicate or reversed links are summed.")
             _network_file = st.file_uploader(
                 "Network",
                 type=["csv"],
@@ -103,12 +109,14 @@ with st.sidebar:
 
             # Step 3 — Generate nouns
             st.caption("3. Generate nouns file — extracted from the documents file above")
+            st.caption("You may either upload a nouns JSON below or generate nouns here and use them directly.")
             if st.button(
-                "Generate nouns file",
+                "Generate nouns",
                 use_container_width=True,
                 disabled=_docs_file is None,
-                help="Run noun extraction (spaCy) on the uploaded documents. This may take several minutes. Download the result and upload it in step 4." if _docs_file else "Upload a documents file first.",
+                help="Run noun extraction (spaCy) on titles and abstracts. This may take several minutes." if _docs_file else "Upload a documents file first.",
             ):
+                _docs_file.seek(0)
                 _docs_df = pd.read_csv(_docs_file, dtype={"id": str})
                 _docs_meta = {
                     row["id"].strip(): {"title": str(row.get("title", "") or ""), "abstract": str(row.get("abstract", "") or "")}
@@ -121,10 +129,12 @@ with st.sidebar:
                     indent=2,
                 ).encode()
                 st.session_state["_generated_nouns_json"] = _nouns_json
+                st.session_state["_generated_nouns"] = _generated_nouns
+                st.session_state["_generated_nouns_docs_name"] = _docs_file.name
 
             if "_generated_nouns_json" in st.session_state:
                 st.download_button(
-                    "Download nouns file",
+                    "Download generated nouns",
                     data=st.session_state["_generated_nouns_json"],
                     file_name="nouns.json",
                     mime="application/json",
@@ -133,26 +143,37 @@ with st.sidebar:
 
             # Step 4 — Nouns
             st.caption("4. Nouns — JSON dictionary: document id → list of noun lemmas")
+            st.caption("You can upload this JSON, or use the generated nouns above directly.")
             _nouns_file = st.file_uploader(
-                "Nouns",
+                "Nouns JSON",
                 type=["json"],
                 label_visibility="collapsed",
-                help="JSON file mapping document id to a list of noun lemmas. Generate this file using the button above.",
+                help="JSON file mapping document id to a list of noun lemmas. If you generated nouns above, you can load custom data without uploading this file.",
             )
 
             # Load
-            _custom_ready = _docs_file is not None and _network_file is not None and _nouns_file is not None
+            _generated_nouns_ready = (
+                "_generated_nouns" in st.session_state
+                and _docs_file is not None
+                and st.session_state.get("_generated_nouns_docs_name") == _docs_file.name
+            )
+            _has_nouns = _nouns_file is not None or _generated_nouns_ready
+            _custom_ready = _docs_file is not None and _network_file is not None and _has_nouns
             if st.button(
                 "Load custom data",
                 use_container_width=True,
                 disabled=not _custom_ready,
-                help="Load the uploaded files." if _custom_ready else "Upload documents, network, and nouns files first.",
+                help="Load the uploaded files." if _custom_ready else "Upload documents and network files, then upload or generate nouns.",
             ):
                 st.session_state["dataset_source"] = "custom"
                 st.session_state["custom_docs_file"]    = _docs_file
                 st.session_state["custom_network_file"] = _network_file
                 st.session_state["custom_nouns_file"]   = _nouns_file
+                st.session_state["custom_generated_nouns"] = st.session_state.get("_generated_nouns") if _generated_nouns_ready else None
                 st.session_state.pop("cluster_result", None)
+                st.session_state["saved_collections"] = []
+                st.session_state["active_collection"] = None
+                st.session_state["selected_clusters"] = set()
 
 # ---------------------------------------------------------------------------
 # Resolve active dataset
@@ -164,10 +185,10 @@ _dataset_source = st.session_state.get("dataset_source")
 # ---------------------------------------------------------------------------
 if "selected_clusters" not in st.session_state:
     st.session_state["selected_clusters"] = set()
-if "saved_selections" not in st.session_state:
-    st.session_state["saved_selections"] = []
-if "active_selection" not in st.session_state:
-    st.session_state["active_selection"] = None
+if "saved_collections" not in st.session_state:
+    st.session_state["saved_collections"] = []
+if "active_collection" not in st.session_state:
+    st.session_state["active_collection"] = None
 
 def _to_superscript(n: int) -> str:
     return str(n).translate(str.maketrans("-0123456789", "⁻⁰¹²³⁴⁵⁶⁷⁸⁹"))
@@ -178,10 +199,10 @@ def _to_superscript(n: int) -> str:
 def _cb_set_active():
     chosen = st.session_state["_active_sel_radio"]
     if chosen == "All documents":
-        st.session_state["active_selection"] = None
+        st.session_state["active_collection"] = None
     else:
-        st.session_state["active_selection"] = next(
-            (s for s in st.session_state["saved_selections"] if s["name"] == chosen), None
+        st.session_state["active_collection"] = next(
+            (s for s in st.session_state["saved_collections"] if s["name"] == chosen), None
         )
 
 def _cb_save_selection():
@@ -191,22 +212,21 @@ def _cb_save_selection():
     selected_ids = st.session_state.get("selected_clusters", set())
     if not selected_ids:
         return
-    membership = prev["membership"]
+    membership = prev["document_to_cluster"]
     doc_ids = [name for name, cid in membership.items() if cid in selected_ids]
     doc_ids += list(st.session_state.get("outside_papers", set()))
-    n = len(st.session_state["saved_selections"]) + 1
+    n = len(st.session_state["saved_collections"]) + 1
     name = st.session_state.get("_save_sel_name", "").strip() or f"Selection {n}"
-    st.session_state["saved_selections"].append({"name": name, "doc_ids": doc_ids, "intra_deg": None})
+    st.session_state["saved_collections"].append(_build_collection(name, doc_ids, loaded_dataset))
     st.session_state["selected_clusters"] = set()
     st.session_state["outside_papers"] = set()
-    st.session_state["expand_outside_enabled"] = False
     st.session_state["expand_outside_enabled"] = False
     st.session_state.pop("_save_sel_name", None)
 
 def _cb_add_selection():
     tokens = st.session_state.get("sel_input", "").strip().split()
     prev = st.session_state.get("cluster_result")
-    valid_ids = {v["community_id"] for v in prev["cg"].vs} if prev else set()
+    valid_ids = {v["community_id"] for v in prev["clusters"].vs} if prev else set()
     not_found = []
     for token in tokens:
         try:
@@ -229,7 +249,7 @@ def _cb_clear_selection():
 def _cb_select_all():
     prev = st.session_state.get("cluster_result")
     if prev:
-        st.session_state["selected_clusters"] = {v["community_id"] for v in prev["cg"].vs}
+        st.session_state["selected_clusters"] = {v["community_id"] for v in prev["clusters"].vs}
     st.session_state.pop("_sel_warning", None)
 
 def _cb_remove_selection():
@@ -311,6 +331,64 @@ def load_abstracts(cluster_id: int) -> dict[str, str]:
     return {}
 
 
+def _build_loaded_dataset(source: str, loaded_graph, metadata: dict, paper_nouns: dict, abstracts: dict | None = None, cluster_id=None) -> dict:
+    """Return the normalized loaded dataset used by collections and cluster runs."""
+    abstracts = abstracts or {}
+    documents = {}
+    all_ids = set(metadata) | set(paper_nouns) | set(abstracts) | {v["name"] for v in loaded_graph.vs}
+    for pid in all_ids:
+        meta = metadata.get(pid, {})
+        documents[pid] = {
+            "title": meta.get("title", "") or "",
+            "abstract": abstracts.get(pid, meta.get("abstract", "") or ""),
+            "nouns": set(paper_nouns.get(pid, set())),
+        }
+    return {
+        "source": source,
+        "cluster_id": cluster_id,
+        "loaded_graph": loaded_graph,
+        "documents": documents,
+    }
+
+
+def _build_collection(name: str, selected_documents, dataset: dict) -> dict:
+    """Build a saved collection from selected documents and the immutable loaded graph."""
+    selected = list(dict.fromkeys(str(doc_id) for doc_id in selected_documents))
+    selected_set = set(selected)
+    loaded_graph = dataset["loaded_graph"]
+    keep_vertices = [v.index for v in loaded_graph.vs if v["name"] in selected_set]
+    subgraph = loaded_graph.subgraph(keep_vertices)
+    connection_counts = compute_degree(subgraph)
+    term_counts: dict[str, int] = defaultdict(int)
+    for doc_id in selected:
+        for noun in dataset["documents"].get(doc_id, {}).get("nouns", set()):
+            term_counts[noun] += 1
+    return {
+        "name": name,
+        "selected_documents": selected,
+        "doc_ids": selected,
+        "subgraph": subgraph,
+        "connection_counts": connection_counts,
+        "term_counts": dict(term_counts),
+    }
+
+
+def _collection_metadata(dataset: dict) -> dict[str, dict]:
+    """Expose document title/abstract metadata in the shape expected by graph helpers."""
+    return {
+        pid: {"title": doc.get("title", ""), "abstract": doc.get("abstract", "")}
+        for pid, doc in dataset["documents"].items()
+    }
+
+
+def _collection_nouns(dataset: dict) -> dict[str, set[str]]:
+    return {
+        pid: set(doc.get("nouns", set()))
+        for pid, doc in dataset["documents"].items()
+        if doc.get("nouns")
+    }
+
+
 # ---------------------------------------------------------------------------
 # Load data for active dataset (needed before sidebar renders)
 # ---------------------------------------------------------------------------
@@ -318,6 +396,7 @@ if _dataset_source == "custom":
     _network_file = st.session_state.get("custom_network_file")
     _docs_file    = st.session_state.get("custom_docs_file")
     _nouns_file   = st.session_state.get("custom_nouns_file")
+    _generated_nouns = st.session_state.get("custom_generated_nouns")
 
     _network_file.seek(0)
     _net_df  = pd.read_csv(_network_file, dtype={"source": str, "target": str})
@@ -347,41 +426,54 @@ if _dataset_source == "custom":
             str(pid): set(lemmas)
             for pid, lemmas in json.load(_nouns_file).items()
         }
+    elif _generated_nouns is not None:
+        _custom_nouns = {
+            str(pid): set(lemmas)
+            for pid, lemmas in _generated_nouns.items()
+        }
     else:
         _custom_nouns = {}
 
     _cluster_id = None
-    base_graph  = _custom_graph
-    metadata    = _custom_metadata
-    paper_nouns = _custom_nouns
+    loaded_dataset = _build_loaded_dataset("custom", _custom_graph, _custom_metadata, _custom_nouns)
 
 elif _dataset_source == "demo":
     _cluster_id = st.session_state.get("dataset_cluster_id")
-    base_graph, metadata = load_base_graph(_cluster_id)
-    paper_nouns = load_paper_nouns(_cluster_id)
+    _demo_graph, _demo_metadata = load_base_graph(_cluster_id)
+    _demo_nouns = load_paper_nouns(_cluster_id)
+    _demo_abstracts = load_abstracts(_cluster_id)
+    loaded_dataset = _build_loaded_dataset("demo", _demo_graph, _demo_metadata, _demo_nouns, _demo_abstracts, _cluster_id)
 
 else:
     _cluster_id = None
-    base_graph  = None
-    metadata    = {}
-    paper_nouns = {}
+    loaded_dataset = None
+
+base_graph = loaded_dataset["loaded_graph"] if loaded_dataset else None
+metadata = _collection_metadata(loaded_dataset) if loaded_dataset else {}
+paper_nouns = _collection_nouns(loaded_dataset) if loaded_dataset else {}
+
+if loaded_dataset is not None:
+    _loaded_graph_id = id(loaded_dataset["loaded_graph"])
+    if st.session_state.get("_all_documents_collection_graph") == _loaded_graph_id:
+        all_documents_collection = st.session_state["_all_documents_collection"]
+    else:
+        all_documents_collection = _build_collection(
+            "All documents",
+            [v["name"] for v in loaded_dataset["loaded_graph"].vs],
+            loaded_dataset,
+        )
+        st.session_state["_all_documents_collection"] = all_documents_collection
+        st.session_state["_all_documents_collection_graph"] = _loaded_graph_id
+    active_collection = st.session_state.get("active_collection") or all_documents_collection
+else:
+    all_documents_collection = None
+    active_collection = None
 
 # Handle deferred label regeneration (button clicked before paper_nouns was loaded)
 _regen = st.session_state.pop("_regen_labels", None)
 if _regen and "cluster_result" in st.session_state:
     _prev = st.session_state["cluster_result"]
-    label_clusters(_prev["cg"], _prev["labels"], paper_nouns, _prev["membership"], m=_regen["m"])
-
-# Compute intra-degree for any newly saved selection that doesn't have it yet
-if base_graph is not None:
-    for _sel in st.session_state["saved_selections"]:
-        if _sel.get("intra_deg") is None:
-            _sel["intra_deg"] = compute_degree(base_graph, subset=set(_sel["doc_ids"]))
-
-# Compute intra-degree for "All documents" once per dataset load
-if base_graph is not None and st.session_state.get("_all_docs_deg_graph") != id(base_graph):
-    st.session_state["_all_docs_deg"]       = compute_degree(base_graph)
-    st.session_state["_all_docs_deg_graph"] = id(base_graph)
+    label_clusters(_prev["clusters"], _prev["labels"], paper_nouns, _prev["document_to_cluster"], m=_regen["m"])
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +483,7 @@ if (base_graph is not None
         and st.session_state.get("expand_outside_enabled")
         and st.session_state.get("selected_clusters")
         and "cluster_result" in st.session_state):
-    _membership_pre  = st.session_state["cluster_result"]["membership"]
+    _membership_pre  = st.session_state["cluster_result"]["document_to_cluster"]
     _threshold_pre   = st.session_state.get("outside_threshold", 20)
     _sel_names_pre   = {name for name, cid in _membership_pre.items()
                         if cid in st.session_state["selected_clusters"]}
@@ -417,9 +509,9 @@ with st.sidebar:
             st.caption("Load a dataset first.")
         else:
             st.caption("You can save document collections with the Select documents menu.")
-            _saved = st.session_state["saved_selections"]
-            _active = st.session_state.get("active_selection")
-            _options = [{"name": "All documents", "doc_ids": list(metadata.keys())}] + _saved
+            _saved = st.session_state["saved_collections"]
+            _active = st.session_state.get("active_collection")
+            _options = [all_documents_collection] + _saved
             _option_names = [o["name"] for o in _options]
             _active_name = _active["name"] if _active else "All documents"
             _active_idx = _option_names.index(_active_name) if _active_name in _option_names else 0
@@ -434,31 +526,26 @@ with st.sidebar:
             )
 
             _view = _options[_active_idx]
-            _view_names = _view["doc_ids"]
+            active_collection = _view
+            _view_names = _view["selected_documents"]
             _total_view = len(_view_names)
 
-            if _active_idx == 0:
-                _intra_deg = st.session_state.get("_all_docs_deg", {})
-            else:
-                _intra_deg = _view.get("intra_deg") or {}
+            _connection_counts = _view.get("connection_counts", {})
 
-            _rows_top = sorted(_view_names, key=lambda n: _intra_deg.get(n, 0), reverse=True)[:1000]
+            _rows_top = sorted(_view_names, key=lambda n: _connection_counts.get(n, 0), reverse=True)[:1000]
             _sel_df = pd.DataFrame([
-                {"doc_id": n, "edges": _intra_deg.get(n, 0), "title": metadata.get(n, {}).get("title", "")}
+                {"doc_id": n, "edges": _connection_counts.get(n, 0), "title": metadata.get(n, {}).get("title", "")}
                 for n in _rows_top
             ])
             _caption = f"{_total_view:,} documents"
             if _total_view > 1000:
                 _caption += " — showing top 1,000"
-            _abstracts = load_abstracts(_cluster_id) if _cluster_id is not None else {
-                pid: metadata.get(pid, {}).get("abstract", "") for pid in _view_names
-            }
             st.download_button(
                 "Export CSV",
                 data=pd.DataFrame([
-                    {"doc_id": n, "edges": _intra_deg.get(n, 0),
+                    {"doc_id": n, "edges": _connection_counts.get(n, 0),
                      "title": metadata.get(n, {}).get("title", ""),
-                     "abstract": _abstracts.get(n, "")}
+                     "abstract": metadata.get(n, {}).get("abstract", "")}
                     for n in _view_names
                 ]).to_csv(index=False).encode(),
                 file_name=f"{_view['name'].lower().replace(' ', '_')}.csv",
@@ -475,15 +562,15 @@ with st.sidebar:
 
             if _active_idx > 0:
                 if st.button("Delete this selection", key="del_sel", use_container_width=True):
-                    st.session_state["saved_selections"] = [
+                    st.session_state["saved_collections"] = [
                         s for s in _saved if s["name"] != _active_name
                     ]
-                    st.session_state["active_selection"] = None
+                    st.session_state["active_collection"] = None
                     st.rerun()
 
-    _active_sel = st.session_state.get("active_selection")
+    _active_sel = active_collection if active_collection and active_collection["name"] != "All documents" else None
     if _active_sel is not None:
-        _run_label = f"Cluster — {_active_sel['name']} ({len(_active_sel['doc_ids']):,} docs)"
+        _run_label = f"Cluster — {_active_sel['name']} ({len(_active_sel['selected_documents']):,} docs)"
     else:
         _run_label = "Cluster all documents"
 
@@ -624,7 +711,7 @@ with st.sidebar:
 
             def _cell_html(val):
                 text = str(val) if val is not None else ""
-                return text.replace("\n", "<br>")
+                return html.escape(text).replace("\n", "<br>")
 
             _header = "".join(
                 f"<th style='padding:6px 8px;border:1px solid #444;text-align:left;"
@@ -735,7 +822,7 @@ with st.sidebar:
                     st.text_input(
                         "Collection name",
                         key="_save_sel_name",
-                        placeholder=f"Collection {len(st.session_state['saved_selections']) + 1}",
+                        placeholder=f"Collection {len(st.session_state['saved_collections']) + 1}",
                     )
                 with _sn2:
                     st.button("Save", key="save_sel", use_container_width=True,
@@ -762,33 +849,48 @@ if _dataset_source is None:
 if run:
     try:
         with st.spinner("Running Leiden…"):
-            _active_sel = st.session_state.get("active_selection")
-            if _active_sel is not None:
-                keep_names = set(_active_sel["doc_ids"])
-            else:
-                keep_names = None  # all documents
-
-            g = base_graph.copy()
-            if keep_names is not None:
-                drop = [v.index for v in g.vs if v["name"] not in keep_names]
-                g.delete_vertices(drop)
+            selected_documents = set(active_collection["selected_documents"])
+            g = active_collection["subgraph"].copy()
+            if g.vcount() == 0:
+                st.error("The active collection has no documents in the loaded graph.")
+                st.stop()
+            before_component = {v["name"] for v in g.vs}
             removed_disconnected = 0
+            disconnected_documents = set()
             if main_component_only:
                 g, removed_disconnected = filter_to_giant_component(g)
+                disconnected_documents = before_component - {v["name"] for v in g.vs}
+                if g.vcount() == 0:
+                    st.error("No documents remain after applying the main-component filter.")
+                    st.stop()
             apply_leiden(g, resolution=resolution)
             n_leiden = len(set(g.vs["community_id"]))
 
         with st.spinner(f"Merging {n_leiden} → {target_n} clusters…" if n_leiden > target_n else "Building cluster map…"):
             removed_isolated = merge_to_target(g, target_n) if n_leiden > target_n else 0
-            cg, labels = build_cluster_graph(g, metadata)
-            membership = {v["name"]: v["community_id"] for v in g.vs}
-            label_clusters(cg, labels, paper_nouns, membership, m=label_m)
+            document_to_cluster = {
+                v["name"]: v["community_id"]
+                for v in g.vs
+                if v["community_id"] is not None and v["community_id"] >= 0
+            }
+            assigned_documents = set(document_to_cluster)
+            unassigned_documents = selected_documents - assigned_documents
+            cg, labels = build_cluster_graph(g, metadata, active_collection["connection_counts"])
+            label_clusters(cg, labels, paper_nouns, document_to_cluster, m=label_m)
 
         st.session_state["cluster_result"] = {
+            "id": os.urandom(8).hex(),
+            "collection_name": active_collection["name"],
+            "selected_documents": selected_documents,
             "cg": cg,
+            "clusters": cg,
             "labels": labels,
-            "membership": membership,
-            "n_papers": g.vcount(),
+            "membership": document_to_cluster,
+            "document_to_cluster": document_to_cluster,
+            "unassigned_documents": unassigned_documents,
+            "disconnected_documents": disconnected_documents,
+            "n_selected": len(selected_documents),
+            "n_papers": len(assigned_documents),
             "n_citations": g.ecount(),
             "n_leiden": n_leiden,
             "removed_disconnected": removed_disconnected,
@@ -820,14 +922,14 @@ if "cluster_result" not in st.session_state:
 
 try:
     result     = st.session_state["cluster_result"]
-    cg         = result["cg"]
+    cg         = result["clusters"]
     labels     = result["labels"]
-    membership = result["membership"]
+    membership = result["document_to_cluster"]
     n_clusters = cg.vcount()
 
-    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
-    col1.metric("Documents",                f"{result['n_papers']:,}")
-    col2.metric("Citations",                f"{result['n_citations']:,}")
+    col1, col2, col3, col4, col5, col6, col7, col8 = st.columns(8)
+    col1.metric("Selected documents",       f"{result['n_selected']:,}")
+    col2.metric("Assigned to clusters",     f"{result['n_papers']:,}")
     col3.metric("Resolution",               f"{resolution:.2e}")
     col4.metric("Clusters before merging",  result["n_leiden"])
     col5.metric("Clusters after merging",   n_clusters)
@@ -841,6 +943,9 @@ try:
         f"{result['removed_isolated']:,}",
         help="Documents in clusters with no citation links to neighbouring clusters at merge time.",
     )
+
+    if result.get("unassigned_documents"):
+        st.caption(f"{len(result['unassigned_documents']):,} selected documents were not assigned to a visible cluster.")
 
     if n_clusters > config.MAX_RENDERABLE_CLUSTERS:
         st.warning(
@@ -904,7 +1009,7 @@ try:
     # ---------------------------------------------------------------------------
     if layout == "Bubble chart":
         # Cache the layout positions — only recompute when clustering or max_starts changes
-        _layout_key = (id(result), max_starts)
+        _layout_key = (result.get("id"), max_starts)
         if st.session_state.get("_bubble_layout_key") != _layout_key:
             from graph.bubble_layout import build_node_list, build_graph
             with st.spinner("Computing bubble layout…"):

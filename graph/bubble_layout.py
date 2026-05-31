@@ -140,6 +140,9 @@ def _build_from_start(start_idx: int, node_list: list[dict]) -> list[dict] | Non
     ordered[0]["coor"] = (0.0, 0.0)
     placed = [ordered[0]]
 
+    if len(ordered) == 1:
+        return placed
+
     r0, r1 = ordered[0]["radius"], ordered[1]["radius"]
     ordered[1]["coor"] = (r0 + r1, 0.0)
     placed.append(ordered[1])

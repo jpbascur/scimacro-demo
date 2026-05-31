@@ -1,11 +1,7 @@
 """Central configuration for the Science Map demo.
 
 All file paths, column names, and algorithm parameters live here so that the rest
-of the codebase never contains magic strings or numbers. To adapt this demo to a
-different dataset, only this file should need to change.
-
-BigQuery parameters (BQ_*) are used only by BigQuerySource and are not needed when
-running against local CSV files via LocalSource.
+of the codebase never contains magic strings or numbers.
 """
 import os
 

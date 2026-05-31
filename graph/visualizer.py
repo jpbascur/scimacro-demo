@@ -18,6 +18,7 @@ color, cluster 1 the second, etc. Node/bubble size in both renderers is proporti
 to cluster size (number of member documents).
 """
 import math
+import html
 
 import igraph as ig
 import plotly.graph_objects as go
@@ -99,6 +100,14 @@ def _term_high_hex() -> str: return "#{:02x}{:02x}{:02x}".format(*_PLASMA_STOPS[
 _COLORBAR_MAX_PCT = 25   # values above this are clamped to the top colour
 
 
+def _escape_text(value) -> str:
+    return html.escape(str(value), quote=True)
+
+
+def _safe_label_html(value: str) -> str:
+    return _escape_text(value).replace("&lt;br&gt;", "<br>")
+
+
 def _sqrt_colorscale(n: int = 512) -> list:
     """Plotly colorscale where position 1.0 corresponds to _COLORBAR_MAX_PCT%."""
     return [[i / n, _gradient_color(i / n * _COLORBAR_MAX_PCT / 100)] for i in range(n + 1)]
@@ -118,7 +127,7 @@ def _inject_gradient_legend(
     <div style="position:fixed;bottom:20px;right:20px;background:rgba(0,0,0,0.75);
                 padding:10px 14px;border-radius:8px;color:white;
                 font-family:sans-serif;font-size:12px;z-index:999;">
-      <div style="margin-bottom:5px;text-align:center;font-weight:bold;">{color_label.replace("<br>", " ")}</div>
+      <div style="margin-bottom:5px;text-align:center;font-weight:bold;">{_safe_label_html(color_label).replace("<br>", " ")}</div>
       <div style="display:flex;align-items:center;gap:8px;">
         <span>{min_label}</span>
         <div style="width:120px;height:14px;
@@ -215,18 +224,18 @@ def build_pyvis_html(
         top_titles = info.get("top_titles", [])
         docs_html = "".join(
             f"<br>{i+1}. {t[:80] + '…' if len(t) > 80 else t}"
-            for i, t in enumerate(top_titles[:top_docs]) if t
+            for i, t in enumerate([_escape_text(t[:80] + 'â€¦' if len(t) > 80 else t) for t in top_titles[:top_docs]]) if t
         )
         nouns_html = "".join(
             f"<br><span style='color:#aaa'>{i+1}. {n}</span>"
-            for i, n in enumerate(info.get("top_nouns", [])[:top_nouns])
+            for i, n in enumerate([_escape_text(n) for n in info.get("top_nouns", [])[:top_nouns]])
         )
         if term_freq is not None:
             if raw_values is not None:
                 display = f"{int(raw_values[cid]):,}"
             else:
                 display = f"{term_freq[cid]*100:.2f}%"
-            metric_html = f"<br><b>{display} {hover_label}</b>"
+            metric_html = f"<br><b>{_escape_text(display)} {_safe_label_html(hover_label)}</b>"
             color = _gradient_color(term_freq[cid])
         else:
             metric_html = ""
@@ -382,18 +391,18 @@ def build_bubble_figure(
         top_titles_v = info_v.get("top_titles", [])
         docs_html_v = "".join(
             f"<br>{i+1}. {t[:80] + '…' if len(t) > 80 else t}"
-            for i, t in enumerate(top_titles_v[:top_docs]) if t
+            for i, t in enumerate([_escape_text(t[:80] + 'â€¦' if len(t) > 80 else t) for t in top_titles_v[:top_docs]]) if t
         )
         nouns_html_v = "".join(
             f"<br><span style='color:#aaa'>{i+1}. {n}</span>"
-            for i, n in enumerate(info_v.get("top_nouns", [])[:top_nouns])
+            for i, n in enumerate([_escape_text(n) for n in info_v.get("top_nouns", [])[:top_nouns]])
         )
         if term_freq is not None:
             if raw_values is not None:
                 display = f"{int(raw_values[cid]):,}"
             else:
                 display = f"{term_freq[cid]*100:.2f}%"
-            metric_html_v = f"<br><b>{display} {hover_label}</b>"
+            metric_html_v = f"<br><b>{_escape_text(display)} {_safe_label_html(hover_label)}</b>"
         else:
             metric_html_v = ""
         hover = (

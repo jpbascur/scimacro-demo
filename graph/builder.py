@@ -202,6 +202,7 @@ def merge_to_target(g: ig.Graph, target_n: int) -> int:
     heapq.heapify(heap)
 
     removed_papers = 0
+    removed_vertices: list[int] = []
 
     while len(cluster_nodes) > target_n:
         # Pop smallest valid cluster — O(log n), stale entries discarded
@@ -212,7 +213,9 @@ def merge_to_target(g: ig.Graph, target_n: int) -> int:
 
         # No neighbours: this community is a citation island — remove it
         if not adj.get(a):
-            removed_papers += len(cluster_nodes.pop(a))
+            removed = cluster_nodes.pop(a)
+            removed_papers += len(removed)
+            removed_vertices.extend(removed)
             adj.pop(a, None)
             continue
 
@@ -229,7 +232,9 @@ def merge_to_target(g: ig.Graph, target_n: int) -> int:
 
         if best_b is None:
             # All neighbours were already removed — treat as isolated
-            removed_papers += len(cluster_nodes.pop(a))
+            removed = cluster_nodes.pop(a)
+            removed_papers += len(removed)
+            removed_vertices.extend(removed)
             adj.pop(a, None)
             continue
 
@@ -247,6 +252,9 @@ def merge_to_target(g: ig.Graph, target_n: int) -> int:
 
         # Push best_b with its new size — old heap entry becomes stale
         heapq.heappush(heap, (len(cluster_nodes[best_b]), best_b))
+
+    for v_idx in removed_vertices:
+        g.vs[v_idx]["community_id"] = -1
 
     # Renumber community IDs 0-based, largest community = 0
     rank = {cid: rank for rank, cid in
@@ -295,6 +303,7 @@ def compute_degree(g: ig.Graph, subset: set[str] | None = None) -> dict[str, int
 def build_cluster_graph(
     g: ig.Graph,
     metadata: dict[str, dict],
+    connection_counts: dict[str, int] | None = None,
 ) -> tuple["ig.Graph", dict[int, dict]]:
     """Collapse the paper-level graph into a cluster-level graph for visualisation.
 
@@ -322,12 +331,20 @@ def build_cluster_graph(
     Returns:
         (cg, labels) tuple.
     """
-    membership = g.vs["community_id"]
+    membership = [c for c in g.vs["community_id"] if c is not None and c >= 0]
+    if not membership:
+        cg = ig.Graph(n=0, directed=False)
+        cg.vs["community_id"] = []
+        cg.vs["size"] = []
+        return cg, {}
+
     n_clusters = max(membership) + 1
 
     cluster_sizes = [0] * n_clusters
-    for c in membership:
-        cluster_sizes[c] += 1
+    for v in g.vs:
+        c = v["community_id"]
+        if c is not None and c >= 0:
+            cluster_sizes[c] += 1
 
     intra_degree = [0.0] * g.vcount()
     edge_weights: dict[tuple[int, int], float] = {}
@@ -335,6 +352,8 @@ def build_cluster_graph(
     for e in g.es:
         src_c = g.vs[e.source]["community_id"]
         dst_c = g.vs[e.target]["community_id"]
+        if src_c is None or dst_c is None or src_c < 0 or dst_c < 0:
+            continue
         w = e["weight"] if has_weights else 1.0
         if src_c == dst_c:
             intra_degree[e.source] += w
@@ -347,8 +366,11 @@ def build_cluster_graph(
     cluster_papers: list[list[tuple[float, str]]] = [[] for _ in range(n_clusters)]
     for v in g.vs:
         c = v["community_id"]
+        if c is None or c < 0:
+            continue
         title = metadata.get(v["name"], {}).get("title", "") or ""
-        cluster_papers[c].append((intra_degree[v.index], title))
+        score = connection_counts.get(v["name"], 0) if connection_counts is not None else intra_degree[v.index]
+        cluster_papers[c].append((score, title))
 
     labels: dict[int, dict] = {}
     for cid in range(n_clusters):

@@ -102,7 +102,7 @@ def label_clusters(
 
     for pid, nouns in paper_nouns.items():
         c = membership.get(pid)
-        if c is None or c >= n:
+        if c is None or c < 0 or c >= n:
             continue
         for noun in nouns:
             counts[c][noun] += 1
@@ -149,7 +149,7 @@ def cluster_term_frequency(
     totals = [0] * n
     for pid, nouns in paper_nouns.items():
         c = membership.get(pid)
-        if c is None or c >= n:
+        if c is None or c < 0 or c >= n:
             continue
         totals[c] += 1
         if lemma in nouns:
